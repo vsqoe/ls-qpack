@@ -42,6 +42,14 @@ SOFTWARE.
 #include "lsqpack.h"
 #include "lsxpack_header.h"
 
+// VSQoE headers
+#include "/home/lakshay21060/server/openlitespeed/vsqoe_shared_module.h"
+
+// VSQoE Declarations
+unsigned long vsqoe_get_cwnd() {
+    return atomic_load_explicit(&vsqoe_shared_cwnd, memory_order_relaxed);
+}
+
 #ifdef XXH_HEADER_NAME
 #include XXH_HEADER_NAME
 #else
@@ -4506,6 +4514,35 @@ lsqpack_dec_push_entry (struct lsqpack_dec *dec,
 {
     if (0 == ringbuf_add(&dec->qpd_dyn_table, entry))
     {
+        int header_name_len = (int)entry->dte_name_len;
+        char *header_name = (char *)malloc((header_name_len+1)*sizeof(char));
+        memcpy(header_name, DTE_NAME(entry), header_name_len);
+        header_name[header_name_len] = 0;
+
+        int header_value_len = (int)entry->dte_val_len;
+        char *header_value = (char *)malloc((header_value_len+1)*sizeof(char));
+        memcpy(header_value, DTE_VALUE(entry), header_value_len);
+        header_value[header_value_len] = 0;
+
+        D_DEBUG("VSQoE: log: headers: name: %s, value: %s", header_name, header_value);
+        if (strcmp(header_name, "fallback") != 0) {
+            goto VSQoE_NoFallbackHeader;
+        }
+        D_DEBUG("VsQoE: log: fallback: %s", header_value);
+
+        if (strcmp(header_value, "true") == 0) {
+            unsigned long cwnd = vsqoe_get_cwnd();
+            char command[256];
+            snprintf(command, sizeof(command), "sudo bpftool map update name CwndMap "
+                     "key hex 00 00 00 00 value hex %02lX %02lX %02lX %02lX",
+                     cwnd & 0xFF, (cwnd >> 8) & 0xFF, (cwnd >> 16) & 0xFF, (cwnd >> 24) & 0xFF);
+            system(command);
+        }
+
+VSQoE_NoFallbackHeader:
+        free(header_name);
+        free(header_value);
+
         dec->qpd_cur_capacity += DTE_SIZE(entry);
         D_DEBUG("push entry:(`%.*s': `%.*s'), capacity %u",
                                 (int) entry->dte_name_len, DTE_NAME(entry),
